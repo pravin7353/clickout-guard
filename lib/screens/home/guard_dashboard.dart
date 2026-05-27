@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../auth/login_screen.dart';
 import 'qr_scanner_screen.dart';
+import '../../utils/session_manager.dart';
 
 class GuardDashboard extends StatefulWidget {
   const GuardDashboard({super.key});
@@ -11,6 +12,19 @@ class GuardDashboard extends StatefulWidget {
 }
 
 class _GuardDashboardState extends State<GuardDashboard> {
+  @override
+  void initState() {
+    super.initState();
+    _restoreSessionMemory();
+  }
+
+  Future<void> _restoreSessionMemory() async {
+    if (SessionManager.branchCode.isEmpty) {
+      await SessionManager.init();
+      if (mounted) setState(() {});
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
@@ -32,6 +46,7 @@ class _GuardDashboardState extends State<GuardDashboard> {
             IconButton(
               icon: const Icon(Icons.logout, color: Colors.white),
               onPressed: () async {
+                await SessionManager.clear(); // 🧹 FIX: Memory Card Format!
                 await FirebaseAuth.instance.signOut();
                 // ✅ WARNING FIX: Check if widget is mounted after async
                 if (!context.mounted) return;
@@ -70,7 +85,8 @@ class _GuardDashboardState extends State<GuardDashboard> {
                       children: [
                         const Text("Welcome on Duty,",
                             style: TextStyle(color: Colors.grey, fontSize: 12)),
-                        Text(user?.phoneNumber ?? "Guard",
+                        // 🚀 DISPLAY NAME (Fallback to number if issue occurs)
+                        Text(user?.displayName ?? user?.phoneNumber ?? "Guard",
                             style: const TextStyle(
                                 color: Colors.white,
                                 fontSize: 16,

@@ -1,7 +1,7 @@
 name: clickout_guard
 description: Guard app for ClickOut ecosystem.
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.0+2
 
 environment:
   sdk: '>=3.2.0 <4.0.0'
@@ -24,6 +24,9 @@ dependencies:
   pinput: ^5.0.0
   vibration: ^3.1.7
   shared_preferences: ^2.5.4
+  firebase_app_check: ^0.3.1+4
+  firebase_crashlytics: ^4.1.3
+  crypto: ^3.0.3
 
 dev_dependencies:
   flutter_test:
@@ -32,4 +35,4 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-  # Assets hum baad mein add karenge jab zaroorat hogi
+  # Assets hum baad mein add karenge jab zaroorat hogi 

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
+import '../../utils/session_manager.dart';
 
 class GuardVerifyScreen extends StatefulWidget {
   final String orderId;
@@ -12,8 +13,10 @@ class GuardVerifyScreen extends StatefulWidget {
 }
 
 class _GuardVerifyScreenState extends State<GuardVerifyScreen> {
-  final String guardPhone =
-      FirebaseAuth.instance.currentUser?.phoneNumber ?? "Unknown Guard";
+  // 🚀 FETCH GLOBAL NAME FOR DATABASE
+  final String guardName = FirebaseAuth.instance.currentUser?.displayName ??
+      FirebaseAuth.instance.currentUser?.phoneNumber ??
+      "Unknown Guard";
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
   bool isProcessing = false;
@@ -85,6 +88,12 @@ class _GuardVerifyScreenState extends State<GuardVerifyScreen> {
         var data = doc.data() as Map<String, dynamic>;
         userId = data['userId'] ?? '';
 
+        bool isValidStore = (data['branchCode'] == SessionManager.branchCode) &&
+            (data['tenantId'] == SessionManager.tenantId);
+        if (!isValidStore) {
+          throw "SECURITY ALERT: This bill belongs to a different store!";
+        }
+
         // 🚨 RACE CONDITION BLOCKER
         if (data['qrConsumed'] == true) {
           throw "ALREADY SCANNED! Stop the customer immediately!";
@@ -92,11 +101,18 @@ class _GuardVerifyScreenState extends State<GuardVerifyScreen> {
         if (data['paymentStatus'] != 'PAID' && data['status'] != 'completed') {
           throw "Payment is Pending!";
         }
+        // Replay protection inside transaction
+        if (data['qrExpiresAt'] != null) {
+          DateTime exp = (data['qrExpiresAt'] as Timestamp).toDate();
+          if (DateTime.now().isAfter(exp)) {
+            throw "QR EXPIRED! Cannot approve expired gate pass.";
+          }
+        }
 
         transaction.update(orderRef, {
           'exitStatus': 'APPROVED',
           'qrConsumed': true,
-          'verifiedByGuardId': guardPhone,
+          'verifiedByGuardId': guardName, // 🚀 Name save hoga ab se!
           'verifiedAt': FieldValue.serverTimestamp(),
           'spotAuditDone':
               _auditVerified, // 🚀 Log that audit was forced & done
@@ -131,6 +147,15 @@ class _GuardVerifyScreenState extends State<GuardVerifyScreen> {
         var data = doc.data() as Map<String, dynamic>;
         userId = data['userId'] ?? '';
 
+        bool isValidStore = (data['branchCode'] == SessionManager.branchCode) &&
+            (data['tenantId'] == SessionManager.tenantId);
+        if (!isValidStore) {
+          throw "SECURITY ALERT: This bill belongs to a different store!";
+        }
+
+        if (data['qrConsumed'] == true) {
+          throw "ALREADY SCANNED! Cannot reject a consumed gate pass.";
+        }
         if (data['exitStatus'] == 'REJECTED') {
           throw "Already Rejected! Wait for sync.";
         }
@@ -138,7 +163,7 @@ class _GuardVerifyScreenState extends State<GuardVerifyScreen> {
         transaction.update(orderRef, {
           'exitStatus': 'REJECTED',
           'rejectReason': finalReason,
-          'rejectedByGuardId': guardPhone,
+          'rejectedByGuardId': guardName, // 🚀 Name save hoga ab se!
           'rejectedAt': FieldValue.serverTimestamp(),
           'wasEverRejected': true,
         });
@@ -322,6 +347,34 @@ class _GuardVerifyScreenState extends State<GuardVerifyScreen> {
 
           var data = snapshot.data!.data() as Map<String, dynamic>;
 
+          // 🛡️ THE SAAS ISOLATION UI BLOCKER (ULTIMATE FAILSAFE)
+          String oBranch = (data['branchCode'] ?? '').toString().trim();
+          String oStore = (data['storeId'] ?? '').toString().trim();
+          String gBranch = SessionManager.branchCode.trim();
+          String gStore = SessionManager.storeId.trim();
+
+          String oTenant = (data['tenantId'] ?? '').toString().trim();
+          String gTenant = SessionManager.tenantId.trim();
+
+          bool isMatch = (oBranch.isNotEmpty && oBranch == gBranch) &&
+              (oTenant.isNotEmpty && oTenant == gTenant);
+
+          if (!isMatch) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(20.0),
+                child: Text(
+                  "❌ CROSS-STORE ALERT!\n\nOrder Store: [$oStore]\nOrder Branch: [$oBranch]\n\nGuard Store: [$gStore]\nGuard Branch: [$gBranch]\n\nExact values aapke samne hain. Agar alag hain toh Guard app ko logout karke login karo.",
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      color: Colors.redAccent,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w900),
+                ),
+              ),
+            );
+          }
+
           bool isConsumed = data['qrConsumed'] ?? false;
           String exitStatus = data['exitStatus'] ?? 'PENDING';
           bool isPaid =
@@ -429,12 +482,12 @@ class _GuardVerifyScreenState extends State<GuardVerifyScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Row(
+                              const Row(
                                 children: [
-                                  const Icon(Icons.security_update_warning,
+                                  Icon(Icons.security_update_warning,
                                       color: Colors.amber, size: 30),
-                                  const SizedBox(width: 10),
-                                  const Expanded(
+                                  SizedBox(width: 10),
+                                  Expanded(
                                     child: Text(
                                       "RANDOM SPOT AUDIT",
                                       style: TextStyle(

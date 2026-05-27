@@ -10,35 +10,62 @@ class UnifiedAuthService {
   // 📱 1. PHONE OTP ENGINE (Customers, Guards, Cashiers)
   // ==========================================================
 
+  // 🧠 SMART TRACKER: Yaad rakhega ki kis time par kitne OTP gaye
+  static final Map<String, List<int>> _otpHistory = {};
+
+  static bool get _isReleaseBuild {
+    bool release = true;
+    assert(() {
+      release = false;
+      return true;
+    }());
+    return release;
+  }
+
   static Future<void> sendPhoneOtp({
     required String phone,
     required Function(String verificationId) onCodeSent,
     required Function(String error) onError,
   }) async {
     try {
-      // 🛡️ SPARK PLAN SAVER: 60-Second Cooldown Check (Local)
-      final prefs = await SharedPreferences.getInstance();
-      final lastSent = prefs.getInt('last_otp_$phone') ?? 0;
-      final now = DateTime.now().millisecondsSinceEpoch;
+      // Block hardcoded test numbers in release builds
+      if (_isReleaseBuild) {
+        final stripped = phone.replaceAll(RegExp(r'\D'), '');
+        const testNumbers = ['9323137353', '8976543606'];
+        if (testNumbers.contains(stripped)) {
+          onError("Invalid number.");
+          return;
+        }
+      }
 
-      if (now - lastSent < 60000) {
-        throw "Please wait 60 seconds before requesting another OTP.";
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final prefs = await SharedPreferences.getInstance();
+      final key = 'otp_ts_${phone.replaceAll(RegExp(r'\D'), '')}';
+      final stored = prefs.getStringList(key) ?? [];
+
+      // Drop entries older than 60s
+      final history =
+          stored.map(int.parse).where((t) => now - t < 60000).toList();
+
+      if (history.length >= 2) {
+        throw "Too many attempts. Please wait 60 seconds.";
       }
 
       await _auth.verifyPhoneNumber(
         phoneNumber: phone,
-        // Web ReCAPTCHA handles this automatically if setup correctly
         verificationCompleted: (PhoneAuthCredential credential) async {
-          // Auto-resolution (mostly Android)
           await _auth.signInWithCredential(credential);
         },
         verificationFailed: (FirebaseAuthException e) {
           onError(e.message ?? "Verification failed.");
         },
         codeSent: (String verificationId, int? resendToken) async {
-          // Save timestamp to prevent spam
-          await prefs.setInt(
-              'last_otp_$phone', DateTime.now().millisecondsSinceEpoch);
+          history.add(DateTime.now().millisecondsSinceEpoch);
+          final prefs = await SharedPreferences.getInstance();
+          final key = 'otp_ts_${phone.replaceAll(RegExp(r'\D'), '')}';
+          await prefs.setStringList(
+              key, history.map((t) => t.toString()).toList());
+          _otpHistory[phone] = history;
           onCodeSent(verificationId);
         },
         codeAutoRetrievalTimeout: (String verificationId) {},
@@ -62,27 +89,41 @@ class UnifiedAuthService {
 
       UserCredential userCred = await _auth.signInWithCredential(credential);
 
-      // 🧠 AUTO-CREATION & ROLE ASSIGNMENT
+      // 🧠 AUTO-CREATION & ROLE ASSIGNMENT (LINK ADMIN PROFILES)
       if (userCred.user != null) {
-        final docRef = _db.collection(roleCollection).doc(userCred.user!.uid);
-        final doc = await docRef.get();
+        String phoneWithCode = userCred.user!.phoneNumber ?? '';
+        String phoneWithoutCode =
+            phoneWithCode.replaceAll('+91', '').replaceAll(' ', '');
 
-        if (!doc.exists) {
-          // 🚨 SMART SECURITY: Customers automatically active honge, par Staff 'false' rahega jab tak Admin verify na kare!
+        // 🚀 THE FIX: Check if Admin already created this staff by Phone Number!
+        var existingDocs = await _db
+            .collection(roleCollection)
+            .where('phone', whereIn: [phoneWithCode, phoneWithoutCode])
+            .limit(1)
+            .get();
+
+        DocumentReference docRef;
+
+        if (existingDocs.docs.isNotEmpty) {
+          // ✅ Admin panel wala profile mil gaya! Usko use karo.
+          docRef = existingDocs.docs.first.reference;
+        } else {
+          // 🆕 Naya user hai (Customer flow ya unregistered staff)
+          docRef = _db.collection(roleCollection).doc(userCred.user!.uid);
+
           bool isAutoActive = (roleCollection == 'users');
-
-          // Create new user in DB
           await docRef.set({
             ...initialData,
             'uid': userCred.user!.uid,
-            'phone': userCred.user!.phoneNumber,
+            'phone': phoneWithCode,
             'createdAt': FieldValue.serverTimestamp(),
-            'isActive': isAutoActive, // Yahan masterstroke khela hai humne!
+            'isActive': isAutoActive,
           });
         }
 
-        // Update session ID for anti-hijack (from Module 2)
+        // 🔄 Sync Auth UID and Update Session ID (Anti-hijack)
         await docRef.update({
+          'uid': userCred.user!.uid,
           'lastLoginAt': FieldValue.serverTimestamp(),
           'activeSessionId': DateTime.now().millisecondsSinceEpoch.toString(),
         });

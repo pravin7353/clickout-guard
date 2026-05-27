@@ -21,11 +21,14 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isLoading = false;
   String? _verificationId;
 
-  // 1. 🧠 UNIFIED ENGINE: Send OTP
+  // 1. 🧠 UNIFIED ENGINE: Send OTP (With Firebase Space Bypass)
   Future<void> _sendOtp() async {
-    String phone = "+91${_phoneController.text.trim()}";
+    String rawNumber = _phoneController.text.trim();
+    String finalPhone = "+91$rawNumber";
 
-    if (phone.length < 13) {
+    // Test number bypass removed for production security
+
+    if (rawNumber.length != 10) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Please enter valid 10 digit number")),
       );
@@ -35,7 +38,7 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _isLoading = true);
 
     await UnifiedAuthService.sendPhoneOtp(
-      phone: phone,
+      phone: finalPhone,
       onCodeSent: (verificationId) {
         if (!mounted) return;
         setState(() {
@@ -86,40 +89,61 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  // 3. Final Guard Check (Reverted back to check 'guards' collection)
+  // 3. Final Guard Check with Strict Enterprise Bouncer
   Future<void> _checkIfGuard(User user) async {
     String phoneWithCode = user.phoneNumber!;
-    String phoneWithoutCode = user.phoneNumber!.replaceAll('+91', '');
+    String phoneWithoutCode =
+        user.phoneNumber!.replaceAll('+91', '').replaceAll(' ', '');
     String enteredStore = _storeController.text.trim().toUpperCase();
 
     var querySnapshot = await FirebaseFirestore.instance
         .collection('staff')
+        .where('role', isEqualTo: 'GUARD')
+        .where('branchCode', isEqualTo: enteredStore)
         .where('isActive', isEqualTo: true)
-        .where('role',
-            isEqualTo: 'GUARD') // 👈 ENTERPRISE SECURITY: Sirf guard hi aayega!
+        .where('isDeleted', isEqualTo: false)
         .where('phone', whereIn: [phoneWithCode, phoneWithoutCode]).get();
 
     if (!mounted) return;
 
     if (querySnapshot.docs.isNotEmpty) {
       var guardDoc = querySnapshot.docs.first;
+      var data = guardDoc.data();
+
+      // isActive + isDeleted + role enforced in Firestore query above
       // 🗑️ FIX 1: 'guardData' variable hata diya kyunki uska use nahi tha
 
-      // ⏳ Yahan ek naya await chal raha hai
-      await FirebaseFirestore.instance
-          .collection('staff')
-          .doc(guardDoc.id)
-          .set({
-        'storeId': enteredStore,
-        'tenantId': 'tnt_clickout',
-      }, SetOptions(merge: true));
+      // 🚀 THE FIX: Users collection ki jagah sidha upper fetch kiye gaye 'data' se Admin details uthao!
+      String dbTenantId = data['tenantId']?.toString() ?? '';
+      String dbStoreId = data['storeId']?.toString() ?? '';
+      String dbBranchCode = data['branchCode']?.toString() ?? '';
+      String dbGuardName = data['name']?.toString() ?? 'Guard'; // 🚀 FETCH NAME
 
-      SessionManager.setGuardContext(
-        tId: 'tnt_clickout',
-        sId: enteredStore,
-        bCode: enteredStore,
+      // branchCode isolation enforced in Firestore query above
+
+      // 🚀 SAVE TO GLOBAL AUTH MEMORY
+      await FirebaseAuth.instance.currentUser?.updateDisplayName(dbGuardName);
+
+      // 🚨 SAAS DATA CHECKER (Duplicate Blocker)
+      if (dbTenantId.isEmpty || dbStoreId.isEmpty) {
+        await FirebaseAuth.instance.signOut();
+        setState(() {
+          _isLoading = false;
+          _isOtpSent = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text(
+                "⚠️ DUPLICATE TRASH: Ye khali profile hai! Firebase me jake naya wala duplicate delete karo aur Admin wala rakho."),
+            backgroundColor: Colors.red));
+        return;
+      }
+
+      await SessionManager.setGuardContext(
+        tId: dbTenantId,
+        sId: dbStoreId,
+        bCode: dbBranchCode,
+        docId: guardDoc.id,
       );
-
       // 🛡️ FIX 2: Naye await ke baad fir se 'mounted' check karna padta hai
       if (!mounted) return;
 

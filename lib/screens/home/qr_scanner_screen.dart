@@ -1,8 +1,28 @@
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:vibration/vibration.dart';
 import '../../core/theme/app_theme.dart';
+import '../../utils/session_manager.dart';
 import 'guard_verify_screen.dart';
+
+// Shared secret — must match customer app + backend
+// In production replace with remote config value
+const String _qrHmacSecret = 'CG_PROD_SECRET_CHANGE_ME';
+
+bool _verifyQrSignature(Map<String, dynamic> qrData) {
+  final sig = qrData['sig']?.toString();
+  if (sig == null) return false; // unsigned QR rejected
+
+  // Canonical string: oid|tid|bc|exp
+  final payload =
+      '${qrData['oid']}|${qrData['tid']}|${qrData['bc']}|${qrData['exp']}';
+  final key = utf8.encode(_qrHmacSecret);
+  final bytes = utf8.encode(payload);
+  final computed = Hmac(sha256, key).convert(bytes).toString();
+  return computed == sig;
+}
 
 class QRScannerScreen extends StatefulWidget {
   const QRScannerScreen({super.key});
@@ -49,11 +69,87 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
 
         if (!mounted) return;
 
-        // 🚀 Navigate to Real-time Verify Screen
+        // QR DECODE + ISOLATION + REPLAY CHECK
+        String realOrderId = '';
+        try {
+          String decodedStr = utf8.decode(base64Decode(barcode.rawValue!));
+          Map<String, dynamic> qrData = jsonDecode(decodedStr);
+
+          // 1. Must contain orderId
+          if (!qrData.containsKey('oid')) throw "Missing order ID";
+          realOrderId = qrData['oid'];
+
+          // 2. Signature verification (fake QR protection)
+          if (!_verifyQrSignature(qrData)) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text("❌ FAKE QR DETECTED! Signature invalid."),
+                backgroundColor: Colors.red,
+              ));
+            }
+            setState(() => isScanning = true);
+            return;
+          }
+
+          // 2. Replay protection: QR expiry check
+          if (qrData.containsKey('exp')) {
+            int expMs = qrData['exp'];
+            if (DateTime.now().millisecondsSinceEpoch > expMs) {
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                  content: Text("❌ QR Expired! Ask customer to refresh."),
+                  backgroundColor: Colors.red,
+                ));
+              }
+              setState(() => isScanning = true);
+              return;
+            }
+          }
+
+          // 3. Tenant isolation
+          if (qrData.containsKey('tid') &&
+              qrData['tid'] != SessionManager.tenantId) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text("❌ CROSS-TENANT QR! Not your network."),
+                backgroundColor: Colors.red,
+              ));
+            }
+            setState(() => isScanning = true);
+            return;
+          }
+
+          // 4. Branch isolation
+          if (qrData.containsKey('bc') &&
+              qrData['bc'] != SessionManager.branchCode) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text("❌ WRONG BRANCH QR! Not your store."),
+                backgroundColor: Colors.red,
+              ));
+            }
+            setState(() => isScanning = true);
+            return;
+          }
+        } catch (e) {
+          debugPrint("QR decode failed: $e");
+          if (realOrderId.isEmpty) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text("❌ Invalid QR Code!"),
+                backgroundColor: Colors.red,
+              ));
+            }
+            setState(() => isScanning = true);
+            return;
+          }
+        }
+
+        // Navigate only after all checks pass
         await Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (_) => GuardVerifyScreen(orderId: barcode.rawValue!),
+            builder: (_) => GuardVerifyScreen(orderId: realOrderId),
           ),
         );
 

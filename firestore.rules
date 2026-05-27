@@ -1,0 +1,76 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── HELPER FUNCTIONS ──────────────────────────────────────
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isGuard() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/staff/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.role == 'GUARD' &&
+        get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.isActive == true &&
+        get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.isDeleted == false;
+    }
+
+    function guardData() {
+      return get(/databases/$(database)/documents/staff/$(request.auth.uid)).data;
+    }
+
+    function sametenant(orderId) {
+      return get(/databases/$(database)/documents/orders/$(orderId)).data.tenantId
+             == guardData().tenantId;
+    }
+
+    function sameBranch(orderId) {
+      return get(/databases/$(database)/documents/orders/$(orderId)).data.branchCode
+             == guardData().branchCode;
+    }
+
+    // ── STAFF COLLECTION ─────────────────────────────────────
+
+    match /staff/{docId} {
+      // Guard can only read their own document
+      allow read: if isSignedIn() && request.auth.uid == resource.data.uid;
+      // Only backend/admin writes staff docs
+      allow write: if false;
+    }
+
+    // ── ORDERS COLLECTION ────────────────────────────────────
+
+    match /orders/{orderId} {
+      // Guard can read only orders in their branch+tenant
+      allow read: if isGuard() &&
+                     resource.data.tenantId == guardData().tenantId &&
+                     resource.data.branchCode == guardData().branchCode;
+
+      // Guard can only update exitStatus, qrConsumed, verifiedBy fields
+      allow update: if isGuard() &&
+                       resource.data.tenantId == guardData().tenantId &&
+                       resource.data.branchCode == guardData().branchCode &&
+                       resource.data.qrConsumed == false &&
+                       request.resource.data.diff(resource.data).affectedKeys()
+                         .hasOnly(['exitStatus','qrConsumed','verifiedByGuardId',
+                                   'verifiedAt','rejectedByGuardId','rejectedAt',
+                                   'rejectReason','wasEverRejected','spotAuditDone']);
+
+      allow create: if false;
+      allow delete: if false;
+    }
+
+    // ── USERS COLLECTION (trust score only) ──────────────────
+
+    match /users/{userId} {
+      allow read, write: if false; // handled server-side only
+    }
+
+    // ── ALL OTHER COLLECTIONS — DENY ─────────────────────────
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
