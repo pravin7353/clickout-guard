@@ -1,8 +1,9 @@
 import 'package:clickout_guard/screens/home/guard_dashboard.dart';
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:pinput/pinput.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import '../../core/auth/unified_auth_service.dart';
 import '../../utils/session_manager.dart';
 
@@ -14,19 +15,16 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final TextEditingController _storeController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _otpController = TextEditingController();
   bool _isOtpSent = false;
   bool _isLoading = false;
   String? _verificationId;
 
-  // 1. 🧠 UNIFIED ENGINE: Send OTP (With Firebase Space Bypass)
+  // 1. Send OTP (phone-only, no branch code required)
   Future<void> _sendOtp() async {
     String rawNumber = _phoneController.text.trim();
     String finalPhone = "+91$rawNumber";
-
-    // Test number bypass removed for production security
 
     if (rawNumber.length != 10) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -36,6 +34,31 @@ class _LoginScreenState extends State<LoginScreen> {
     }
 
     setState(() => _isLoading = true);
+
+    // 🔒 Phone-only staff pre-check (avoids wasting SMS credits)
+    try {
+      final staffSnap = await FirebaseFirestore.instance
+          .collection('staff')
+          .where('phone', whereIn: [rawNumber, '+91$rawNumber'])
+          .where('isActive', isEqualTo: true)
+          .where('isDeleted', isEqualTo: false)
+          .limit(1)
+          .get();
+
+      if (staffSnap.docs.isEmpty) {
+        if (!mounted) return;
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("This number is not registered as staff. Contact your admin."),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
+    } catch (e) {
+      debugPrint("Staff pre-check warning: $e");
+    }
 
     await UnifiedAuthService.sendPhoneOtp(
       phone: finalPhone,
@@ -62,7 +85,7 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  // 2. 🧠 UNIFIED ENGINE: Verify OTP
+  // 2. Verify OTP and resolve session via Cloud Function
   Future<void> _verifyOtp() async {
     String otp = _otpController.text.trim();
     if (otp.length != 6) return;
@@ -70,84 +93,52 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _isLoading = true);
 
     try {
+      // Step 1: Firebase Phone Auth
       final userCred = await UnifiedAuthService.verifyOtpAndLogin(
         verificationId: _verificationId!,
         smsCode: otp,
         roleCollection: 'staff',
-        initialData: {'role': 'GUARD'}, // Default data if auto-created
+        initialData: {'role': 'GUARD'},
       );
 
-      if (userCred != null && userCred.user != null) {
-        await _checkIfGuard(userCred.user!);
-        // 🛡️ Custom claims (role/tenantId/branchCode) turant fresh karne ke liye
-        await Future.delayed(const Duration(seconds: 2));
-        await FirebaseAuth.instance.currentUser?.getIdToken(true);
+      if (userCred == null || userCred.user == null) {
+        throw "Authentication failed. Please try again.";
       }
-    } catch (e) {
+
+      // Step 2: Force-refresh token so Cloud Function sees verified phone claim
+      await FirebaseAuth.instance.currentUser?.getIdToken(true);
+
+      // Step 3: Resolve tenantId/storeId/branchCode via Cloud Function
+      final callable = FirebaseFunctions.instance.httpsCallable(
+        'resolveStaffSession',
+        options: HttpsCallableOptions(timeout: const Duration(seconds: 15)),
+      );
+      final result = await callable.call({'role': 'guard'});
+      final sessionData = Map<String, dynamic>.from(result.data as Map);
+
       if (!mounted) return;
-      setState(() => _isLoading = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.toString()), backgroundColor: Colors.red),
-      );
-    }
-  }
 
-  // 3. Final Guard Check with Strict Enterprise Bouncer
-  Future<void> _checkIfGuard(User user) async {
-    String phoneWithCode = user.phoneNumber!;
-    String phoneWithoutCode =
-        user.phoneNumber!.replaceAll('+91', '').replaceAll(' ', '');
-    String enteredStore = _storeController.text.trim().toUpperCase();
+      final tenantId = (sessionData['tenantId'] ?? '').toString();
+      final storeId = (sessionData['storeId'] ?? '').toString();
+      final branchCode = (sessionData['branchCode'] ?? '').toString();
+      final name = (sessionData['name'] ?? 'Guard').toString();
+      final docId = (sessionData['docId'] ?? '').toString();
 
-    var querySnapshot = await FirebaseFirestore.instance
-        .collection('staff')
-        .where('role', isEqualTo: 'GUARD')
-        .where('branchCode', isEqualTo: enteredStore)
-        .where('isActive', isEqualTo: true)
-        .where('isDeleted', isEqualTo: false)
-        .where('phone', whereIn: [phoneWithCode, phoneWithoutCode]).get();
-
-    if (!mounted) return;
-
-    if (querySnapshot.docs.isNotEmpty) {
-      var guardDoc = querySnapshot.docs.first;
-      var data = guardDoc.data();
-
-      // isActive + isDeleted + role enforced in Firestore query above
-      // 🗑️ FIX 1: 'guardData' variable hata diya kyunki uska use nahi tha
-
-      // 🚀 THE FIX: Users collection ki jagah sidha upper fetch kiye gaye 'data' se Admin details uthao!
-      String dbTenantId = data['tenantId']?.toString() ?? '';
-      String dbStoreId = data['storeId']?.toString() ?? '';
-      String dbBranchCode = data['branchCode']?.toString() ?? '';
-      String dbGuardName = data['name']?.toString() ?? 'Guard'; // 🚀 FETCH NAME
-
-      // branchCode isolation enforced in Firestore query above
-
-      // 🚀 SAVE TO GLOBAL AUTH MEMORY
-      await FirebaseAuth.instance.currentUser?.updateDisplayName(dbGuardName);
-
-      // 🚨 SAAS DATA CHECKER (Duplicate Blocker)
-      if (dbTenantId.isEmpty || dbStoreId.isEmpty) {
+      if (tenantId.isEmpty || storeId.isEmpty) {
         await FirebaseAuth.instance.signOut();
-        setState(() {
-          _isLoading = false;
-          _isOtpSent = false;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text(
-                "⚠️ DUPLICATE TRASH: Ye khali profile hai! Firebase me jake naya wala duplicate delete karo aur Admin wala rakho."),
-            backgroundColor: Colors.red));
-        return;
+        throw "⚠️ Staff profile incomplete (missing tenantId/storeId). Contact your admin.";
       }
+
+      // Step 4: Update display name and persist session
+      await FirebaseAuth.instance.currentUser?.updateDisplayName(name);
 
       await SessionManager.setGuardContext(
-        tId: dbTenantId,
-        sId: dbStoreId,
-        bCode: dbBranchCode,
-        docId: guardDoc.id,
+        tId: tenantId,
+        sId: storeId,
+        bCode: branchCode,
+        docId: docId,
       );
-      // 🛡️ FIX 2: Naye await ke baad fir se 'mounted' check karna padta hai
+
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -156,25 +147,48 @@ class _LoginScreenState extends State<LoginScreen> {
           backgroundColor: Colors.green));
       Navigator.pushReplacement(context,
           MaterialPageRoute(builder: (context) => const GuardDashboard()));
-    } else {
-      // ⏳ Yahan bhi ek await chal raha hai
-      await FirebaseAuth.instance.signOut();
-
-      // 🛡️ FIX 2: Is await ke baad bhi check lagana padega
+    } catch (e) {
       if (!mounted) return;
-
       setState(() {
         _isLoading = false;
-        _isOtpSent = false;
-        _otpController.clear();
       });
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text("Access Denied! Active Guard registration not found."),
-          backgroundColor: Colors.red));
+
+      final errStr = e.toString().toLowerCase();
+      final isNotFound = (e is FirebaseFunctionsException && e.code == 'not-found') ||
+          errStr.contains('not-found') ||
+          errStr.contains('no active staff record');
+
+      if (isNotFound) {
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => AlertDialog(
+            title: const Text("Access Denied"),
+            content: const Text(
+              "This number is not registered as a guard. Contact your admin.",
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  setState(() {
+                    _isOtpSent = false;
+                    _otpController.clear();
+                  });
+                },
+                child: const Text("Re-enter Number"),
+              ),
+            ],
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("❌ $e"), backgroundColor: Colors.red),
+        );
+      }
     }
   }
 
-  // UI REMAINS EXACTLY THE SAME (Untouched)
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -192,23 +206,7 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
             const SizedBox(height: 40),
             if (!_isOtpSent) ...[
-              // 🏪 1. Naya Store ID / Branch Code Field
-              TextField(
-                controller: _storeController,
-                style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                  labelText: "Store ID / Branch Code",
-                  labelStyle: const TextStyle(color: Colors.grey),
-                  prefixIcon: const Icon(Icons.store, color: Color(0xFFF7B731)),
-                  enabledBorder: OutlineInputBorder(
-                      borderSide: BorderSide(color: Colors.grey[800]!)),
-                  focusedBorder: const OutlineInputBorder(
-                      borderSide: BorderSide(color: Color(0xFFF7B731))),
-                ),
-              ),
-              const SizedBox(height: 20),
-
-              // 📱 2. Purana Phone Number Field (Jo gayab ho gaya tha)
+              // 📱 Phone Number Field (branch code removed — auto-resolved)
               TextField(
                 controller: _phoneController,
                 keyboardType: TextInputType.phone,
@@ -221,7 +219,7 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
               const SizedBox(height: 20),
 
-              // 🚀 3. GET OTP Button
+              // 🚀 GET OTP Button
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(

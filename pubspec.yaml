@@ -16,6 +16,7 @@ dependencies:
   
   # ✅ Database
   cloud_firestore: ^5.4.4
+  cloud_functions: ^5.0.0
   
   # ✅ Scanner & Utils
   mobile_scanner: ^5.2.3
