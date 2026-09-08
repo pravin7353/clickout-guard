@@ -34,3 +34,5 @@
     public static int v(...);
     public static int i(...);
 }
+
+-keep class com.google.android.play.core.** { *; }

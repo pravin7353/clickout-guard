@@ -7,9 +7,9 @@
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:127640175838:android:ef18ba90719f0f932c2e4f",
+        "mobilesdk_app_id": "1:127640175838:android:94fcfab18204277a2c2e4f",
         "android_client_info": {
-          "package_name": "com.example.clickout"
+          "package_name": "com.clickout.cashier"
         }
       },
       "oauth_client": [],
@@ -26,9 +26,9 @@
     },
     {
       "client_info": {
-        "mobilesdk_app_id": "1:127640175838:android:9ea0509dd72d90432c2e4f",
+        "mobilesdk_app_id": "1:127640175838:android:b64ea8b2980279122c2e4f",
         "android_client_info": {
-          "package_name": "com.example.clickout_cashier"
+          "package_name": "com.clickout.clickout_idt"
         }
       },
       "oauth_client": [],
@@ -45,9 +45,28 @@
     },
     {
       "client_info": {
-        "mobilesdk_app_id": "1:127640175838:android:bac43f06ffc4d2e72c2e4f",
+        "mobilesdk_app_id": "1:127640175838:android:5ba4230a1b63d9bb2c2e4f",
         "android_client_info": {
-          "package_name": "com.example.clickout_guard"
+          "package_name": "com.clickout.customer"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAJN5jLOE_c4lHKrrYgDPaK9AhTFuZ5U8U"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:127640175838:android:746edfaa2debdde82c2e4f",
+        "android_client_info": {
+          "package_name": "com.clickout.guard"
         }
       },
       "oauth_client": [],

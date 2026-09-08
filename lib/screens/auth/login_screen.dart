@@ -79,6 +79,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
       if (userCred != null && userCred.user != null) {
         await _checkIfGuard(userCred.user!);
+        // 🛡️ Custom claims (role/tenantId/branchCode) turant fresh karne ke liye
+        await Future.delayed(const Duration(seconds: 2));
+        await FirebaseAuth.instance.currentUser?.getIdToken(true);
       }
     } catch (e) {
       if (!mounted) return;

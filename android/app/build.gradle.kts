@@ -24,7 +24,7 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.clickout_guard"
+        applicationId = "com.clickout.guard"
         // ✅ FIX: Set minSdk to 23 and targetSdk to 34 for mobile_scanner
         minSdk = flutter.minSdkVersion
         targetSdk = 35

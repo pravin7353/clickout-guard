@@ -52,8 +52,34 @@ void main() async {
   runApp(const GuardApp());
 }
 
-class GuardApp extends StatelessWidget {
+class GuardApp extends StatefulWidget {
   const GuardApp({super.key});
+
+  @override
+  State<GuardApp> createState() => _GuardAppState();
+}
+
+class _GuardAppState extends State<GuardApp> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 🛡️ App foreground me aane par token refresh, taaki naye custom claims
+    // (role/tenantId/branchCode) turant mil jayein
+    if (state == AppLifecycleState.resumed) {
+      FirebaseAuth.instance.currentUser?.getIdToken(true);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {

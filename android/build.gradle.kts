@@ -1,12 +1,5 @@
-buildscript {
-    repositories {
-        google()
-        mavenCentral()
-    }
-    dependencies {
-        classpath("com.google.gms:google-services:4.4.2")
-        classpath("com.google.firebase:firebase-crashlytics-gradle:3.0.2")
-    }
+plugins {
+    id("com.google.firebase.crashlytics") version "2.9.9" apply false
 }
 
 allprojects {
