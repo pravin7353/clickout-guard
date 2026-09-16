@@ -1,10 +1,12 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class UnifiedAuthService {
   static final FirebaseAuth _auth = FirebaseAuth.instance;
   static final FirebaseFirestore _db = FirebaseFirestore.instance;
+  static const bool _useMsg91 = true; // feature flag — set false to instantly revert to Firebase Phone Auth
 
   // ==========================================================
   // 📱 1. PHONE OTP ENGINE (Customers, Guards, Cashiers)
@@ -51,25 +53,46 @@ class UnifiedAuthService {
         throw "Too many attempts. Please wait 60 seconds.";
       }
 
-      await _auth.verifyPhoneNumber(
-        phoneNumber: phone,
-        verificationCompleted: (PhoneAuthCredential credential) async {
-          await _auth.signInWithCredential(credential);
-        },
-        verificationFailed: (FirebaseAuthException e) {
-          onError(e.message ?? "Verification failed.");
-        },
-        codeSent: (String verificationId, int? resendToken) async {
+      if (_useMsg91) {
+        try {
+          final callable = FirebaseFunctions.instance.httpsCallable(
+            'sendMsg91Otp',
+            options: HttpsCallableOptions(timeout: const Duration(seconds: 15)),
+          );
+          await callable.call({'phone': phone.replaceAll('+91', ''), 'appId': 'guard'});
           history.add(DateTime.now().millisecondsSinceEpoch);
           final prefs = await SharedPreferences.getInstance();
           final key = 'otp_ts_${phone.replaceAll(RegExp(r'\D'), '')}';
           await prefs.setStringList(
               key, history.map((t) => t.toString()).toList());
           _otpHistory[phone] = history;
-          onCodeSent(verificationId);
-        },
-        codeAutoRetrievalTimeout: (String verificationId) {},
-      );
+
+          onCodeSent(phone);
+        } catch (e) {
+          onError(e.toString());
+        }
+      } else {
+        // 🚀 Firebase Phone Auth (fallback)
+        await _auth.verifyPhoneNumber(
+          phoneNumber: phone,
+          verificationCompleted: (PhoneAuthCredential credential) async {
+            await _auth.signInWithCredential(credential);
+          },
+          verificationFailed: (FirebaseAuthException e) {
+            onError(e.message ?? "Verification failed.");
+          },
+          codeSent: (String verificationId, int? resendToken) async {
+            history.add(DateTime.now().millisecondsSinceEpoch);
+            final prefs = await SharedPreferences.getInstance();
+            final key = 'otp_ts_${phone.replaceAll(RegExp(r'\D'), '')}';
+            await prefs.setStringList(
+                key, history.map((t) => t.toString()).toList());
+            _otpHistory[phone] = history;
+            onCodeSent(verificationId);
+          },
+          codeAutoRetrievalTimeout: (String verificationId) {},
+        );
+      }
     } catch (e) {
       onError(e.toString());
     }
@@ -82,12 +105,26 @@ class UnifiedAuthService {
     required Map<String, dynamic> initialData, // Data to save if new user
   }) async {
     try {
-      PhoneAuthCredential credential = PhoneAuthProvider.credential(
-        verificationId: verificationId,
-        smsCode: smsCode,
-      );
-
-      UserCredential userCred = await _auth.signInWithCredential(credential);
+      UserCredential userCred;
+      if (_useMsg91) {
+        // verificationId is actually the phone number here (see sendPhoneOtp above)
+        final verifyCallable = FirebaseFunctions.instance.httpsCallable(
+          'verifyMsg91OtpAndSignIn',
+          options: HttpsCallableOptions(timeout: const Duration(seconds: 15)),
+        );
+        final result = await verifyCallable.call({
+          'phone': verificationId.replaceAll('+91', ''),
+          'otp': smsCode,
+        });
+        final customToken = result.data['customToken'] as String;
+        userCred = await _auth.signInWithCustomToken(customToken);
+      } else {
+        PhoneAuthCredential credential = PhoneAuthProvider.credential(
+          verificationId: verificationId,
+          smsCode: smsCode,
+        );
+        userCred = await _auth.signInWithCredential(credential);
+      }
 
       // 🧠 AUTO-CREATION & ROLE ASSIGNMENT (LINK ADMIN PROFILES)
       if (userCred.user != null) {
